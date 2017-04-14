@@ -268,4 +268,79 @@ public class HfCheckFileItemWriter implements ItemWriter<HfCheckFile> {
 
 示例中, `hfFileImportJob` 包含一个名为 `importHfFileStep` 的 step。 `importHfFileStep` 包含一个未命名的 tasklet, 而tasklet中有一个 chunk。 chunk 引用了 `hfReader` 和 `hfCheckFileItemWriter` 。 同时指定 **commit-interval** 值为 `5` . 意思是每次最多传递给 writer 的记录数是5条。 该 step 使用 `hfReader` 读取5条产品记录，然后将这些记录传递给 `hfCheckFileItemWriter` 写出。 chunk 一直重复执行, 直到所有数据都处理完成。
 
+## Tasklets(微任务) ##
+
+分块是一个非常好的作业拆分策略,用来将作业拆分成多块: 依次读取每一个 item , 执行处理, 然后将其按块写出。 但如果想执行某些只需要执行一次的线性操作该怎么办呢?  此时可以创建一个 `tasklet`。 `tasklet` 可以执行各种操作/需求! 例如, 可以从FTP站点下载文件, 解压/解密文件, 或者调用web服务来判断文件处理是否已经执行。 下面是创建 `tasklet`的基本过程:
+
+1. 定义一个实现 `org.springframework.batch.core.step.tasklet.Tasklet` 接口的类。
+2. 实现 `execute()` 方法。
+3. 返回恰当的 `org.springframework.batch.repeat.RepeatStatus` 值: `CONTINUABLE` 或者是 `FINISHED`.
+
+清单10中添加了一个id为 `archiveFileStep` 的step, , 然后在 `importFileStep` 中将 `"next"` 指向他。  `"next"` 参数可以用来控制 job 中 step 的执行流程。 虽然超出了本文所述的范围,但需要注意, 可以根据某个任务的执行结果状态来决定下面执行哪个 step[也就是 job分支,类似于 if,switch 什么的].   `archiveFileStep` 只包含上面创建的这个 `tasklet`。
+
+## 弹性(Resiliency) ##
+
+Spring Batch job resiliency提供了以下三个工具:
+
+1. **Skip** : 如果处理过程中某条记录是错误的, 如CSV文件中格式不正确的行, 那么可以直接跳过该对象, 继续处理下一个。
+2. **Retry** : 如果出现错误,而在几毫秒后再次执行就可能解决, 那么可以让 Spring Batch 对该元素重试一次/(或多次)。 例如, 你可能想要更新数据库中的某条记录, 但另一个查询把这条记录给锁了。 根据业务设计,这个锁将会很快释放, 那么重试可能就会成功。
+3. **Restart** : 如果将 job 状态存储在数据库中, 而一旦它执行失败, 那么就可以选择重启 job 实例, 并继续上次执行的位置。
+
+我们这里不会详细讲述每个 Resiliency 特征, 但我想总结一下可用的选项。
+
+### Skipping Items(跳过某项) ###
+
+有时你可能想要跳过某些记录, 比如 reader 读取的无效记录,或者处理/写入过程中出现异常的对象。 要跳过记录有两种方式:
+
+- 在 `chunk` 元素上定义 `skip-limit` 属性, 告诉Spring 最多允许跳过多少个 items,超过则 job 失败(如果无效记录很少那可以接受,但如果无效记录太多,那可能输入数据就有问题了)。
+- 定义一个 `skippable-exception-classes` 列表, 用来判断当前记录是否可以跳过, 可以指定 `include` 元素来决定发生哪些异常时会跳过当前记录, 还可以指定 `exclude` 元素来决定哪些异常不会触发 skip( 比如你想跳过某个异常层次父类, 但排除一或多个子类异常时)。
+
+示例如下:
+
+	<job id="simpleFileImportJob" xmlns="http://www.springframework.org/schema/batch">
+        <step id="importFileStep">
+            <tasklet>
+                <chunk reader="productReader" processor="productProcessor" writer="productWriter" commit-interval="5" skip-limit="10">
+			<skippable-exception-classes>
+				<include class="org.springframework.batch.item.file.FlatFileParseException" />
+			</skippable-exception-classes>
+		</chunk>
+            </tasklet>
+        </step>
+    </job>
+
+
+这里在处理某条记录时如果抛出 `FlatFileParseException` 异常, 则这条记录将被跳过。 如果超过10次 skip, 那么直接让 job 失败。
+
+### 重试（Retrying Items） ###
+
+有时发生的异常是可以重试的, 如由于数据库锁导致的失败。 重试(Retry)的实现和跳过(Skip)非常相似:
+
+- 在 `chunk` 元素上定义 `retry-limit` 属性, 告诉Spring 每个 item 最多允许重试多少次, 超过则认为该记录处理失败。 如果只用重试, 不指定跳过,则如果某条记录重试处理失败, 则 job将被标记为失败。
+- 定义一个 `retryable-exception-classes` 列表, 用来判断当前记录是否可以重试; 可以指定 `include` 元素来决定哪些异常发生时当前记录可以重试, 还可以指定 `exclude` 元素来决定哪些异常不对当前记录重试执行.。
+
+例如:
+
+	<job id="simpleFileImportJob" xmlns="http://www.springframework.org/schema/batch">
+	    <step id="importFileStep">
+	        <tasklet>
+	            <chunk reader="productReader" processor="productProcessor" writer="productWriter" commit-interval="5" retry-limit="5">
+			<retryable-exception-classes>
+				<include class="org.springframework.dao.OptimisticLockingFailureException" />
+			</retryable-exception-classes>
+		</chunk>
+	        </tasklet>
+	    </step>
+	</job>
+
+
+还可以将重试和可跳过的异常通过 skippable exception  与 retry exception 对应起来。 因此, 如果某个异常触发了5次重试, 5次重试之后还没搞定, 恰好该异常也在 skippable 列表中, 则这条记录将被跳过。 如果 exception 不在 skippable 列表则会让整个 job 失败。
+
+### 重启 job ###
+
+最后, 对于执行失败的 job作业, 我们可以重新启动,并让他们从上次断开的地方继续执行。 要做到这一点, 只需要使用和上次一模一样的参数来启动 job, 则 Spring Batch 会自动从数据库中找到这个实例然后继续执行。 你也可以拒绝重启, 或者通过参数控制 job 中一个 step 可以重启的次数(一般来说多次重试都失败了,则可能需要放弃处理了。)
+
+## 总结 ##
+
+批处理是某些业务需求最好的解决方案,  Spring batch 框架提供了实现批处理作业的整体架构。 Spring Batch 将分块模式分为三个阶段: 读取(read)、 处理(process)、 和写入(write),并支持常规资源的读取和写入。 本期的[Open source Java projects ](http://www.javaworld.com/blog/open-source-java-projects/) 系列探讨了 Spring Batch 是干什么的以及如何使用它。
 
