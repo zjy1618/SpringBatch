@@ -266,6 +266,6 @@ public class HfCheckFileItemWriter implements ItemWriter<HfCheckFile> {
 
 
 
-示例中, `simpleFileImportJob` 包含一个名为 `importFileStep` 的 step。 `importFileStep` 包含一个未命名的 tasklet, 而tasklet中有一个 chunk。 chunk 引用了 `productReader` 和 `productWriter` 。 同时指定 **commit-interval** 值为 `5` . 意思是每次最多传递给 writer 的记录数是5条。 该 step 使用 `productReader` 读取5条产品记录，然后将这些记录传递给 `productWriter` 写出。 chunk 一直重复执行, 直到所有数据都处理完成。
+示例中, `hfFileImportJob` 包含一个名为 `importHfFileStep` 的 step。 `importHfFileStep` 包含一个未命名的 tasklet, 而tasklet中有一个 chunk。 chunk 引用了 `hfReader` 和 `hfCheckFileItemWriter` 。 同时指定 **commit-interval** 值为 `5` . 意思是每次最多传递给 writer 的记录数是5条。 该 step 使用 `hfReader` 读取5条产品记录，然后将这些记录传递给 `hfCheckFileItemWriter` 写出。 chunk 一直重复执行, 直到所有数据都处理完成。
 
 
