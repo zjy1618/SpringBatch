@@ -77,4 +77,195 @@ Spring Batch 的内置 reader,  `org.springframework.batch.item.file.FlatFileIte
 
 
 
-请注意,虽然Spring Batch提供了基础框架, 但我们仍需要设置字段映射的逻辑。 清单2显示了 *Product* 对象的源码,也就是我们准备构建的对象。
+请注意,虽然Spring Batch提供了基础框架, 但我们仍需要设置字段映射的逻辑。 清单2显示了 *HfCheckFile* 对象的源码,也就是我们准备构建的对象。
+
+> **清单2 HfCheckFile.java**
+
+public class HfCheckFile extends BaseEntity {
+
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = -4558356843803019234L;
+
+    @Column
+	private String payNumber;// 支付流水号
+
+    @Column
+    private Date tradeDate; //交易时间
+
+	@Column
+	private Long tradeAmount; // 交易金额
+    
+    @Column
+    private Long poundage;//手续费
+    
+    @Column
+	private HfTradeStatus status;	//交易状态
+    
+    @Column
+    private Integer bizType;//业务类型(1:代收2:代付3:B2C代收)
+    
+    ......
+    }
+HfCheckFile 类是一个简单的POJO,包含6个字段。 清单3显示了 `HfFieldSetMapper` 类的源代码。
+
+
+
+
+> **清单3 HfFieldSetMapper.java**
+public class HfFieldSetMapper implements FieldSetMapper<HfCheckFile>{
+
+	private static final Logger logger = LoggerFactory.getLogger(HfFieldSetMapper.class);
+
+	@Override
+	public HfCheckFile mapFieldSet(FieldSet fieldSet) throws BindException {
+		try{
+
+			HfCheckFile hfCheckFile = new HfCheckFile();
+			hfCheckFile.setPayNumber(fieldSet.readString( "payNumber" ));
+			String date = fieldSet.readString( "tradeDate");
+			if(StringUtils.isNotBlank(date)){
+				final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
+				Date tradeDate;
+				try {
+					tradeDate = dateFormat.parse(date);
+					hfCheckFile.setTradeDate(tradeDate);
+				} catch (ParseException e) {
+					e.printStackTrace();
+				}
+			}
+			hfCheckFile.setTradeAmount(MoneyTransUtil.yuan2Fen(fieldSet.readBigDecimal("tradeAmount")));
+			hfCheckFile.setPoundage(MoneyTransUtil.yuan2Fen(fieldSet.readBigDecimal("poundage")));
+			hfCheckFile.setBizType(fieldSet.readInt("bizType"));
+			Integer statusI = fieldSet.readInt("status");//交易状态(0:成功2:失败3:可疑
+			if(statusI != null){
+				if(statusI == 0){
+					hfCheckFile.setStatus(HfTradeStatus.STATUS_SUCCESS);
+				} else if(statusI == 2){
+					hfCheckFile.setStatus(HfTradeStatus.STATUS_FAILED);
+				} else if(statusI == 3){
+					hfCheckFile.setStatus(HfTradeStatus.STATUS_QUES);
+				}
+			}
+			return hfCheckFile;
+		} catch (Exception e){
+			logger.error("读取恒丰对账文件异常:" + e.getMessage());
+			e.printStackTrace();
+			return null;
+		}
+
+	}
+
+}
+
+`HfFieldSetMapper` 类实现了 `FieldSetMapper` 接口 ,该接口只定义了一个方法: `mapFieldSet()`.  只要 line mapper 将一行数据解析为单独的字段, 就会构建一个 `FieldSet`（包含命名好的字段), 然后将这个 `FieldSet` 对象传递给 `mapFieldSet()` 方法。 该方法负责创建对象来表示 CSV文件中的一行。 在本例中,我们通过 `FieldSet` 的各种 `read` 方法 构建一个 `HfCheckFile` 实例.
+
+## 写入数据库 ##
+
+
+
+在读取文件得到一组 `HfCheckFile` 之后 ,下一步就是将其写入到数据库。 原则上我们可以组装一个 processing  step,用来对这些数据进行某些业务处理,为简单起见,我们直接将数据写到数据库中。 清单4是 **HfCheckFileItemWriter** 类的源码。
+
+> **清单4 `HfCheckFileItemWriter.java`**
+
+public class HfCheckFileItemWriter implements ItemWriter<HfCheckFile> {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Override
+    public void write(List<? extends HfCheckFile> hfCheckFile_list) throws Exception {
+    	try{
+    		
+    		StringBuffer sql = new StringBuffer();
+    		sql.append("insert into hf_check_file (createDate,modifyDate,payNumber,tradeDate,bizType,tradeAmount,poundage,status) values ");
+    		for( HfCheckFile hfCheckFile : hfCheckFile_list ) {
+    			sql.append("(now(),now(),'" + hfCheckFile.getPayNumber() + "','" + DateTimeUtil.getDate(hfCheckFile.getTradeDate()) + "'," +  hfCheckFile.getBizType() + "," + hfCheckFile.getTradeAmount() + "," + hfCheckFile.getPoundage() + ",'" + hfCheckFile.getStatus() + "')");
+    			sql.append(",");
+    		}
+    		sql.deleteCharAt(sql.length() - 1);
+    		jdbcTemplate.update( sql.toString() );
+    	} catch (Exception e){
+    		e.printStackTrace();
+    	}
+    }
+}
+
+`HfCheckFileItemWriter` 类实现了  `ItemWriter` 接口, 该接口只有一个方法: `write()`.  方法`write()` 接受一个 **list**, 这里是 `List<? extends HfCheckFile> hfCheckFile_list` . Spring Batch 使用一种称为 “chunking” 的策略来实现 **writer** ,  chunking 的意思就是在读取时是一次读取一条数据, 但写入时是将一组数据一起执行的。 在job配置中,可以(通过 `commit-interval`)来控制每次想要一起写的item的数量。 在上面的例子中, `write()` 方法做了这些事:
+
+**HfCheckFileItemWriter** 类使用了Spring的 `JdbcTemplate`  类,这是在  `applicationContext.xml` 文件中定义的, 通过自动装配机制注入到 **HfCheckFileItemWriter**  中。
+
+## 用 spring-batch.xml 将上下文组装起来 ##
+
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-4.0.xsd">
+
+    <bean id ="batchTransactionManager" class= "org.springframework.batch.support.transaction.ResourcelessTransactionManager" ></bean>
+
+	<!-- Job Repository: used to persist the state of the batch job -->
+    <bean id="jobRepository" class="org.springframework.batch.core.repository.support.MapJobRepositoryFactoryBean">
+        <property name="transactionManager" ref="batchTransactionManager" />
+    </bean>
+
+    <bean id ="syncTaskExecutor" class= "org.springframework.core.task.SyncTaskExecutor" />
+
+    <!-- Job Launcher: creates the job and the job state before launching it -->
+    <bean id="jobLauncher" class="org.springframework.batch.core.launch.support.SimpleJobLauncher">
+        <property name ="taskExecutor" ref= "syncTaskExecutor" />
+        <property name="jobRepository" ref="jobRepository" />
+    </bean>
+
+<!-- 写入数据库 -->
+    <bean id="hfCheckFileItemWriter" class="com.miz.recon.writer.HfCheckFileItemWriter" />
+    <!-- 下载恒丰对账文件并解密 -->
+    <bean id="downHfFileTasklet" class="com.miz.recon.tasklet.DownHfFileTasklet" scope="step">
+        <property name="hfInputFile" value="#{jobParameters['hfInputFile']}" />
+        <property name="date" value="#{jobParameters['date']}" />
+    </bean>
+    <!-- 读取支付系统交易记录并对账 -->
+    <bean id="reconHfAndAlchemistTasklet" class="com.miz.recon.tasklet.ReconHfAndAlchemistTasklet" scope="step">
+        <property name="date" value="#{jobParameters['date']}" />
+    </bean>
+
+
+    <job id="hfFileImportJob" xmlns="http://www.springframework.org/schema/batch">
+        <step id="downHfFileStep" next="importHfFileStep">
+            <tasklet ref="downHfFileTasklet" />
+        </step>
+        <step id="importHfFileStep" next="reconAlchemistStep">
+            <tasklet >
+                <chunk reader="hfReader" writer="hfCheckFileItemWriter" commit-interval="5" />
+            </tasklet>
+        </step>
+        <step id="reconAlchemistStep">
+            <tasklet ref="reconHfAndAlchemistTasklet" />
+        </step>
+    </job>
+    
+</beans>
+
+- `jobRepository` : `MapJobRepositoryFactoryBean` 是 Spring Batch 用来管理 job 状态的组件。 在这里它使用前面配置的 `jdbctemplate` 将 job 信息储存到MySQL数据库中。
+
+- `jobLauncher` : 该组件用来启动和管理 Spring Batch 作业的工作流,。
+
+- `hfReader` : 在job中这个 bean 负责执行读操作。
+
+- `hfCheckFileItemWriter` : 这个bean 负责将 `Product` 实例写入数据库。
+
+> <u><h5>Spring Batch 中的 Lazy scope</h5></u>
+>
+> 你可能注意到 `hfReader` 的 `scope` 属性值为“`step`”。 **step scope** 是Spring框架中的一种作用域, 主要用于 Spring Batch。 它本质上是一种 *lazy scope*, Spring在首次访问时才创建这种 bean。 在本例中, 我们需要使用 step scope 是因为使用了 job 参数中的 "`InputFile`" 值, 这个值在应用启动时是不存在的。在 Spring Batch 中使用 step scope 使得在 Bean创建时能收到 "`InputFile`" 值。
+
+请注意, 一个 `job` 可以包含 **0到多个** step; 一个 `step` 可以有 **0/1** 个 tasklet; 一个 `tasklet` 可以有 **0/1** 个 `chunk`, 如图3所示。
+>**图3 job, step, tasklet 和 chunk 关系**
+
+![ Jobs, steps, tasklets, and chunks](./fig3-chunks.png)
+
+
+
+示例中, `simpleFileImportJob` 包含一个名为 `importFileStep` 的 step。 `importFileStep` 包含一个未命名的 tasklet, 而tasklet中有一个 chunk。 chunk 引用了 `productReader` 和 `productWriter` 。 同时指定 **commit-interval** 值为 `5` . 意思是每次最多传递给 writer 的记录数是5条。 该 step 使用 `productReader` 读取5条产品记录，然后将这些记录传递给 `productWriter` 写出。 chunk 一直重复执行, 直到所有数据都处理完成。
+
+
