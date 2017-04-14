@@ -19,9 +19,9 @@ Spring Batch 有很多组成部分,我们先来看批量作业中的核心部分
 1.读取数据
 2.对数据进行各种处理
 3.对数据进行写操作
-https://github.com/zjy1618/SpringBatch/blob/master/fig1-basicl-ogic.png
-例如, 打开一个CSV格式的数据文件,对文件中的数据执行某种处理,然后将数据写入数据库。 在Spring Batch中, 需要配置一个 reader 来读取文件中的数据(每次一行), 然后将数据传递给 processor 进行处理, 处理完成之后会将结果收集并分组为 “块 chunks” , 然后把这些记录发送给 writer ,在这里是插入到数据库中。 如图1所示。
 
+例如, 打开一个CSV格式的数据文件,对文件中的数据执行某种处理,然后将数据写入数据库。 在Spring Batch中, 需要配置一个 reader 来读取文件中的数据(每次一行), 然后将数据传递给 processor 进行处理, 处理完成之后会将结果收集并分组为 “块 chunks” , 然后把这些记录发送给 writer ,在这里是插入到数据库中。 如图1所示。
+https://github.com/zjy1618/SpringBatch/blob/master/fig1-basicl-ogic.png
 Spring Batch批处理的基本逻辑 图1 Spring Batch批处理的基本逻辑
 
 Spring Batch 提供了常见输入源的 reader 实现, 极大地简化了批处理过程. 例如 CSV文件, XML文件、数据库、文件中的JSON记录,甚至是 JMS; 同样也实现了对应的 writer。 如有需要,创建自定义的 reader 和 writer 也很简单。
